@@ -67,16 +67,36 @@ actor TranslationRenderer {
                 let available = Self.availableArea(for: translation,
                     among: occupiedRegions + translations.map(\.region), surface: frame.surface,
                     background: palette.background, reserved: backingRegions.map(\.bounds), scale: scale)
-                let minimum = CGFloat(16 * scale)
-                let sourceGlyphHeight = translation.region.spans.map { $0.bounds.height }.sorted()
-                let medianHeight = sourceGlyphHeight.isEmpty ? source.height : sourceGlyphHeight[sourceGlyphHeight.count / 2]
-                var fontSize = max(minimum, min(CGFloat(28 * scale), CGFloat(medianHeight) * 1.05))
+                let sourceSize = Self.sourceFontSize(for: translation.region, scale: scale)
+                let minimum = translation.region.spans.isEmpty ? CGFloat(16 * scale) : max(CGFloat(10 * scale), sourceSize * 0.9)
+                var fontSize = sourceSize
+                // First keep the original wrapping footprint. Use a little
+                // adjacent free space only when the translation needs it.
+                let preferred = PixelRect(x: available.x, y: available.y,
+                    width: min(available.width, source.width + 4),
+                    height: min(available.height, source.height + 4))
                 var fit = Self.layout(text: text, size: fontSize, color: palette.foreground,
-                    available: available, source: source, imageHeight: size.height, kind: translation.region.kind)
+                    available: preferred, source: source, imageHeight: size.height, kind: translation.region.kind)
+                let expansion = PixelRect(x: available.x, y: available.y,
+                    width: translation.region.kind == .paragraph
+                        ? min(available.width, Int(ceil(Double(source.width) * 1.5)) + 4) : available.width,
+                    height: available.height)
+                let rowHeights = translation.region.spans.map { $0.bounds.height }.sorted()
+                if !fit.complete, let rowHeight = rowHeights.dropFirst(rowHeights.count / 2).first,
+                   source.height > rowHeight * 3 / 2 {
+                    fit = Self.layout(text: text, size: fontSize, color: palette.foreground,
+                        available: PixelRect(x: preferred.x, y: preferred.y, width: preferred.width,
+                                             height: available.height),
+                        source: source, imageHeight: size.height, kind: translation.region.kind)
+                }
+                if !fit.complete {
+                    fit = Self.layout(text: text, size: fontSize, color: palette.foreground,
+                        available: expansion, source: source, imageHeight: size.height, kind: translation.region.kind)
+                }
                 while !fit.complete && fontSize > minimum {
                     fontSize = max(minimum, fontSize - CGFloat(scale))
                     fit = Self.layout(text: text, size: fontSize, color: palette.foreground,
-                        available: available, source: source, imageHeight: size.height, kind: translation.region.kind)
+                        available: expansion, source: source, imageHeight: size.height, kind: translation.region.kind)
                 }
                 if !fit.complete {
                     overflow.append(translation)
@@ -99,6 +119,17 @@ actor TranslationRenderer {
                                                          blackText: (palette.foreground.components?.first ?? 0) < 0.5))
                 context.saveGState()
                 context.clip(to: Self.quartzRect(fit.backgroundBounds, imageHeight: size.height))
+                // Align the visible glyphs, rather than the font's invisible
+                // ascent padding, to the first recognized source line.
+                let lines = CTFrameGetLines(textFrame) as! [CTLine]
+                if let first = lines.first {
+                    var origin = CGPoint.zero
+                    CTFrameGetLineOrigins(textFrame, CFRange(location: 0, length: 1), &origin)
+                    let ink = CTLineGetBoundsWithOptions(first, .useGlyphPathBounds)
+                    let path = CTFrameGetPath(textFrame).boundingBox
+                    context.translateBy(x: CGFloat(source.x) - (path.minX + origin.x + ink.minX),
+                        y: CGFloat(size.height - source.y) - (path.minY + origin.y + ink.maxY))
+                }
                 CTFrameDraw(textFrame, context)
                 context.restoreGState()
             }
@@ -125,6 +156,25 @@ actor TranslationRenderer {
         let foreground: CGColor
     }
 
+    private static func sourceFontSize(for region: TextRegion, scale: Double) -> CGFloat {
+        var estimates: [CGFloat] = []
+        let text = region.text as NSString
+        for span in region.spans where span.textRange.length > 0 {
+            let range = NSRange(location: span.textRange.location, length: span.textRange.length)
+            guard range.location >= 0, range.location + range.length <= text.length else { continue }
+            let sample = text.substring(with: range)
+            let line = CTLineCreateWithAttributedString(attributedText(sample, size: 20,
+                color: CGColor(gray: 0, alpha: 1), bold: region.kind == .heading))
+            let height = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds).height
+            if height > 0 { estimates.append(20 * CGFloat(span.bounds.height) / height) }
+        }
+        estimates.sort()
+        if !estimates.isEmpty {
+            return max(CGFloat(10 * scale), min(CGFloat(72 * scale), estimates[estimates.count / 2]))
+        }
+        return max(CGFloat(16 * scale), min(CGFloat(28 * scale), CGFloat(region.bounds.height) * 1.05))
+    }
+
     private static func layout(text: String, size: CGFloat, color: CGColor,
                                available: PixelRect, source: PixelRect, imageHeight: Int,
                                kind: TextRegionKind) -> Layout {
@@ -142,14 +192,18 @@ actor TranslationRenderer {
         )
         let height = min(available.height, max(source.height + 2 * padding, Int(ceil(required.height)) + 2 * padding))
         let background = PixelRect(x: available.x, y: available.y, width: available.width, height: height)
+        let innerHeight = max(0, background.height - 2 * padding)
+        // Core Text needs room for invisible ascenders/descenders, even when
+        // the actual glyph ink fits the original UI's compact line box.
         let inner = PixelRect(x: background.x + padding, y: background.y + padding,
-                              width: width, height: max(0, background.height - 2 * padding))
+                              width: width, height: innerHeight + Int(ceil(size * 0.5)))
         let path = CGPath(rect: quartzRect(inner, imageHeight: imageHeight), transform: nil)
         let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: 0), path, nil)
-        let visible = CTFrameGetVisibleStringRange(frame)
+        let visibleLength = min(CTFrameGetVisibleStringRange(frame).length,
+                                visibleInkLength(in: frame, maximumHeight: CGFloat(innerHeight)))
         let lines = CTFrameGetLines(frame) as! [CTLine]
         let brokenWord = firstBrokenWord(in: text, lines: lines)
-        if visible.length >= text.utf16.count, brokenWord == nil,
+        if visibleLength >= text.utf16.count, brokenWord == nil,
            kind == .paragraph || lines.count <= 1 {
             return Layout(frame: frame, backgroundBounds: background, complete: true)
         }
@@ -157,7 +211,7 @@ actor TranslationRenderer {
         guard kind == .paragraph else {
             return Layout(frame: nil, backgroundBounds: background, complete: false)
         }
-        let prefix = completePrefix(of: text, fittingUTF16: min(visible.length, brokenWord ?? visible.length))
+        let prefix = completePrefix(of: text, fittingUTF16: min(visibleLength, brokenWord ?? visibleLength))
         guard !prefix.isEmpty else {
             return Layout(frame: nil, backgroundBounds: background, complete: false)
         }
@@ -168,6 +222,22 @@ actor TranslationRenderer {
             return Layout(frame: nil, backgroundBounds: background, complete: false)
         }
         return Layout(frame: prefixFrame, backgroundBounds: background, complete: false)
+    }
+
+    private static func visibleInkLength(in frame: CTFrame, maximumHeight: CGFloat) -> Int {
+        let lines = CTFrameGetLines(frame) as! [CTLine]
+        guard !lines.isEmpty else { return 0 }
+        var origins = [CGPoint](repeating: .zero, count: lines.count)
+        CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+        let top = origins[0].y + CTLineGetBoundsWithOptions(lines[0], .useGlyphPathBounds).maxY
+        var end = 0
+        for (line, origin) in zip(lines, origins) {
+            let ink = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+            guard top - (origin.y + ink.minY) <= maximumHeight else { break }
+            let range = CTLineGetStringRange(line)
+            end = range.location + range.length
+        }
+        return end
     }
 
     private static func attributedText(_ text: String, size: CGFloat, color: CGColor,
@@ -284,21 +354,41 @@ actor TranslationRenderer {
         guard !samples.isEmpty else {
             return Palette(background: warmWhite, foreground: CGColor(gray: 0, alpha: 1))
         }
-        let red = samples.map(\.0), green = samples.map(\.1), blue = samples.map(\.2)
-        let uniform = [red, green, blue].allSatisfy { ($0.max() ?? 255) - ($0.min() ?? 0) <= 24 }
+        let red = samples.map(\.0).sorted(), green = samples.map(\.1).sorted(), blue = samples.map(\.2).sorted()
+        // A nearby divider should not turn a dark card into a white patch.
+        // Median border samples retain the surrounding UI's dominant color.
         let average: (UInt8, UInt8, UInt8) = (
-            UInt8((red.reduce(0, +) / Double(samples.count)).rounded()),
-            UInt8((green.reduce(0, +) / Double(samples.count)).rounded()),
-            UInt8((blue.reduce(0, +) / Double(samples.count)).rounded())
+            UInt8(red[red.count / 2]), UInt8(green[green.count / 2]), UInt8(blue[blue.count / 2])
         )
         let luminance = 0.2126 * linear(average.0) + 0.7152 * linear(average.1) + 0.0722 * linear(average.2)
-        if uniform, luminance <= 0.10 {
-            return Palette(background: average, foreground: CGColor(gray: 1, alpha: 1))
+        return Palette(background: average, foreground: sourceInk(in: bounds, surface: surface,
+            background: average, fallback: CGColor(gray: luminance > 0.179 ? 0 : 1, alpha: 1)))
+    }
+
+    private static func sourceInk(in bounds: PixelRect, surface: RasterSurface,
+                                  background: (UInt8, UInt8, UInt8), fallback: CGColor) -> CGColor {
+        var samples: [(distance: Int, red: UInt8, green: UInt8, blue: UInt8)] = []
+        let step = max(1, Int(sqrt(Double(bounds.width) * Double(bounds.height) / 10_000)))
+        surface.pixels.withUnsafeBytes { data in
+            let bytes = data.bindMemory(to: UInt8.self)
+            for y in stride(from: bounds.y, to: bounds.y + bounds.height, by: step) {
+                for x in stride(from: bounds.x, to: bounds.x + bounds.width, by: step) {
+                    let offset = y * surface.bytesPerRow + x * 4
+                    let red = bytes[offset + 2], green = bytes[offset + 1], blue = bytes[offset]
+                    let distance = max(abs(Int(red) - Int(background.0)),
+                                       abs(Int(green) - Int(background.1)), abs(Int(blue) - Int(background.2)))
+                    if distance > 40 { samples.append((distance, red, green, blue)) }
+                }
+            }
         }
-        if uniform, luminance >= 0.30 {
-            return Palette(background: average, foreground: CGColor(gray: 0, alpha: 1))
-        }
-        return Palette(background: warmWhite, foreground: CGColor(gray: 0, alpha: 1))
+        guard samples.count >= 4 else { return fallback }
+        samples.sort { $0.distance < $1.distance }
+        let ink = samples.suffix(max(1, samples.count / 4))
+        let count = CGFloat(ink.count) * 255
+        return CGColor(colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, components: [
+            CGFloat(ink.reduce(0) { $0 + Int($1.red) }) / count,
+            CGFloat(ink.reduce(0) { $0 + Int($1.green) }) / count,
+            CGFloat(ink.reduce(0) { $0 + Int($1.blue) }) / count, 1]) ?? fallback
     }
 
     private static func linear(_ byte: UInt8) -> Double {

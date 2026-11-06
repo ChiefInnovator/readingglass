@@ -124,7 +124,7 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         let secondText = "Veuillez arriver à la gare avant le départ."
         let input = OCRResult(frame: original.frame,
                               lines: original.lines + [OCRLine(text: secondText,
-                                  bounds: PixelRect(x: 20, y: 120, width: 280, height: 40), spans: [], confidence: 1)],
+                                  bounds: PixelRect(x: 20, y: 120, width: 240, height: 40), spans: [], confidence: 1)],
                               supportedLanguages: original.supportedLanguages, elapsedSeconds: 0)
         await pipeline.activate(stamp: stamp, target: "en", manualSource: "fr")
         await pipeline.consume(input)
@@ -399,6 +399,31 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(widths, [500])
     }
 
+    func testNearEdgeWordOmissionIsNotTranslatedAtDisplayWidthLimit() async throws {
+        let translator = ScriptedTextTranslator { _, _ in
+            XCTFail("Suspected cut-off text must stay original even when the display cannot widen")
+            return TextTranslationResult(text: "unused", finish: .complete)
+        }
+        let events = await MainActor.run { TranslationEventRecorder() }
+        let pipeline = TranslationPipeline(translator: translator, languageNames: languages) { events.record($0) }
+        let original = makeResult(1, stamp: makeStamp(1))
+        let bounds = PixelRect(x: 20, y: 20, width: 300, height: 40)
+        let input = OCRResult(frame: original.frame, lines: [OCRLine(text: french, bounds: bounds,
+            spans: [OCRSpan(textRange: UTF16Range(location: 0, length: french.utf16.count),
+                            bounds: bounds, confidence: 1)], confidence: 1)],
+            supportedLanguages: original.supportedLanguages, elapsedSeconds: 0)
+        await pipeline.activate(stamp: input.frame.stamp, target: "en", manualSource: "fr", maximumWidth: 340)
+        await pipeline.consume(input)
+        await pipeline.waitUntilIdle()
+        let requests = await translator.requests
+        let progress = await events.progress.last
+        let presentation = await events.presentations.last
+        XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(progress?.clipped, 1)
+        XCTAssertEqual(progress?.translated, 0)
+        XCTAssertEqual(presentation?.initialBackground, original.frame.surface)
+    }
+
     func testChangedNumericFactsAreRejected() async throws {
         let translator = ScriptedTextTranslator { _, _ in
             TextTranslationResult(text: "There are 25 people waiting for the train.", finish: .complete)
@@ -425,7 +450,7 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         let pipeline = TranslationPipeline(translator: translator, languageNames: languages) { events.record($0) }
         let original = makeResult(1, stamp: makeStamp(1))
         let input = OCRResult(frame: original.frame, lines: original.lines + [OCRLine(text: secondText,
-            bounds: PixelRect(x: 20, y: 120, width: 280, height: 40), spans: [], confidence: 1)],
+            bounds: PixelRect(x: 20, y: 120, width: 240, height: 40), spans: [], confidence: 1)],
             supportedLanguages: original.supportedLanguages, elapsedSeconds: 0)
         await pipeline.activate(stamp: input.frame.stamp, target: "en", manualSource: "fr")
         await pipeline.consume(input)
@@ -449,7 +474,7 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
 
     private func makeResult(_ sequence: UInt64, stamp: RevisionStamp, text: String? = nil) -> OCRResult {
         let text = text ?? french
-        let bounds = PixelRect(x: 20, y: 20, width: 280, height: 40)
+        let bounds = PixelRect(x: 20, y: 20, width: 240, height: 40)
         let frame = CapturedFrame(
             id: FrameID(sequence: sequence, capturedAtNanoseconds: sequence), stamp: stamp, displayID: 1,
             captureRectGlobalPoints: PointRect(CGRect(x: 0, y: 0, width: 340, height: 220)),

@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 enum PipelineEvent: Sendable {
@@ -26,6 +27,10 @@ actor ReadingPipeline {
     private var digest: SHA256.Digest?
     private var pending: Work?
     private var worker: Task<Void, Never>?
+    private var latestFrame: CapturedFrame?
+    private var reference: OCRResult?
+    private let clock = ContinuousClock()
+    private var lastScheduledAt: ContinuousClock.Instant?
 
     init(recognizer: any Recognizing, minimumInterval: Duration = .milliseconds(125),
          onEvent: @escaping EventHandler) {
@@ -40,6 +45,9 @@ actor ReadingPipeline {
         pending = nil
         digest = nil
         sourceRevision = 0
+        latestFrame = nil
+        reference = nil
+        lastScheduledAt = nil
     }
 
     func stop() {
@@ -47,6 +55,9 @@ actor ReadingPipeline {
         stamp = nil
         pending = nil
         digest = nil
+        latestFrame = nil
+        reference = nil
+        lastScheduledAt = nil
     }
 
     func consume(_ frame: CapturedFrame) async {
@@ -54,10 +65,16 @@ actor ReadingPipeline {
         let newDigest = SHA256.hash(data: frame.surface.pixels)
         guard newDigest != digest else { return }
         digest = newDigest
-        sourceRevision &+= 1
+        latestFrame = frame
+        let textUnchanged = reference.map { Self.textPixelsMatch($0, frame) } ?? false
+        if textUnchanged, let lastScheduledAt, lastScheduledAt.duration(to: clock.now) < .seconds(1) {
+            return
+        }
+        if !textUnchanged { sourceRevision &+= 1 }
         let work = Work(frame: frame, generation: generation, sourceRevision: sourceRevision)
         pending = work
-        await onEvent(.pending(frame.stamp, work.sourceRevision))
+        lastScheduledAt = clock.now
+        if !textUnchanged { await onEvent(.pending(frame.stamp, work.sourceRevision)) }
         guard work.generation == generation, stamp != nil else { return }
         if worker == nil {
             worker = Task { await self.processQueue() }
@@ -74,8 +91,20 @@ actor ReadingPipeline {
             pending = nil
             do {
                 let result = try await recognizer.recognize(work.frame)
-                guard isCurrent(work) else { continue }
-                await onEvent(.recognized(result, work.sourceRevision))
+                guard work.generation == generation, work.frame.stamp == stamp,
+                      let latestFrame else { continue }
+                let stableLines = latestFrame.id == work.frame.id ? result.lines : result.lines.filter { line in
+                    Self.textPixelsMatch(OCRResult(frame: result.frame, lines: [line],
+                        supportedLanguages: result.supportedLanguages, elapsedSeconds: result.elapsedSeconds), latestFrame)
+                }
+                guard latestFrame.id == work.frame.id || !stableLines.isEmpty else { continue }
+                // Publish only text proven unchanged in the newest frame. A
+                // clock or animated label cannot hold the whole page hostage.
+                let current = OCRResult(frame: latestFrame, lines: stableLines,
+                                        supportedLanguages: result.supportedLanguages,
+                                        elapsedSeconds: result.elapsedSeconds)
+                reference = current
+                await onEvent(.recognized(current, sourceRevision))
             } catch {
                 guard isCurrent(work) else { continue }
                 // Error codes, never the recognized text or capture contents.
@@ -85,6 +114,30 @@ actor ReadingPipeline {
             }
         }
         worker = nil
+    }
+
+    private static func textPixelsMatch(_ result: OCRResult, _ frame: CapturedFrame) -> Bool {
+        let original = result.frame.surface, newest = frame.surface
+        guard result.frame.stamp == frame.stamp, original.size == newest.size,
+              original.bytesPerRow == newest.bytesPerRow, !result.lines.isEmpty else { return false }
+        return original.pixels.withUnsafeBytes { old in
+            newest.pixels.withUnsafeBytes { new in
+                guard let oldBase = old.baseAddress, let newBase = new.baseAddress else { return false }
+                for line in result.lines {
+                    let x0 = max(0, line.bounds.x - 2), y0 = max(0, line.bounds.y - 2)
+                    let x1 = min(original.size.width, line.bounds.x + line.bounds.width + 2)
+                    let y1 = min(original.size.height, line.bounds.y + line.bounds.height + 2)
+                    guard x1 > x0, y1 > y0 else { return false }
+                    for y in y0..<y1 {
+                        let offset = y * original.bytesPerRow + x0 * 4
+                        guard memcmp(oldBase.advanced(by: offset), newBase.advanced(by: offset), (x1 - x0) * 4) == 0 else {
+                            return false
+                        }
+                    }
+                }
+                return true
+            }
+        }
     }
 
     private func isCurrent(_ work: Work) -> Bool {

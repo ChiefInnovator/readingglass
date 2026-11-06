@@ -37,6 +37,23 @@ final class TextRecognizerTests: XCTestCase, @unchecked Sendable {
         try await assertRecognition("Tradução em português: o próximo trem sai amanhã às nove.")
     }
 
+    func testLargeRetinaCaptureRecognizesTextAndPreservesOriginalCoordinates() async throws {
+        let expected = "The large reading glass still recognizes this sentence."
+        let surface = try await Self.render(expected, width: 3888, height: 1738)
+        let input = try await TextRecognizer.recognitionImage(for: surface)
+        XCTAssertLessThanOrEqual(max(input.width, input.height), 3072)
+        XCTAssertLessThanOrEqual(input.width * input.height, 4_000_000)
+        let frame = CapturedFrame(id: FrameID(sequence: 1, capturedAtNanoseconds: 1),
+            stamp: RevisionStamp(geometry: 1, language: 0, model: "large-fixture"), displayID: 0,
+            captureRectGlobalPoints: PointRect(CGRect(x: 0, y: 0, width: 1944, height: 869)),
+            surface: surface, scaleX: 2, scaleY: 2)
+        let result = try await TextRecognizer().recognize(frame)
+        XCTAssertEqual(Self.withoutWhitespace(result.lines.map(\.text).joined(separator: " ")),
+                       Self.withoutWhitespace(expected))
+        XCTAssertEqual(result.frame.surface.size, surface.size)
+        XCTAssertTrue(result.lines.allSatisfy { $0.bounds.y > 1500 }, "OCR coordinates must map to the original capture")
+    }
+
     func testRasterRejectsInvalidDimensionsStrideAndByteCounts() {
         let invalid = [
             RasterSurface(size: PixelSize(width: 0, height: 1), bytesPerRow: 0, pixels: Data()),
@@ -114,9 +131,7 @@ final class TextRecognizerTests: XCTestCase, @unchecked Sendable {
     }
 
     @MainActor
-    private static func render(_ text: String) throws -> RasterSurface {
-        let width = 2200
-        let height = 180
+    private static func render(_ text: String, width: Int = 2200, height: Int = 180) throws -> RasterSurface {
         let bitmap = try XCTUnwrap(NSBitmapImageRep(
             bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,

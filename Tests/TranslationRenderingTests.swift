@@ -269,6 +269,47 @@ final class TranslationRenderingTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    func testRetinaTextMatchesSourceGlyphHeightPositionAndGrayInk() async throws {
+        let bounds = PixelRect(x: 30, y: 24, width: 170, height: 18)
+        var source = frame(width: 500, height: 180, scale: 2, color: (38, 38, 38, 255))
+        var pixels = source.surface.pixels
+        for y in bounds.y..<(bounds.y + bounds.height) {
+            for x in bounds.x..<(bounds.x + bounds.width) {
+                setPixel(&pixels, size: source.surface.size, x: x, y: y, rgba: (185, 185, 185, 255))
+            }
+        }
+        source = replacingPixels(in: source, with: pixels)
+        let original = "Original"
+        let text = TextRegion(id: UUID(), sourceRevision: 1, text: original, bounds: bounds,
+            spans: [OCRSpan(textRange: UTF16Range(location: 0, length: original.utf16.count),
+                            bounds: bounds, confidence: 1)], kind: .label)
+        let output = try await TranslationRenderer().render(frame: source,
+            translations: [RegionTranslation(region: text, text: "Translated")])
+        let glyphs = nontransparentCoordinates(output.foreground)
+        XCTAssertFalse(glyphs.isEmpty)
+        XCTAssertLessThanOrEqual(abs((glyphs.map(\.x).min() ?? 0) - bounds.x), 1)
+        XCTAssertLessThanOrEqual(abs((glyphs.map(\.y).min() ?? 0) - bounds.y), 1)
+        XCTAssertLessThanOrEqual((glyphs.map(\.y).max() ?? 0) - (glyphs.map(\.y).min() ?? 0) + 1, 21,
+                                "Small source text must not be enlarged to the old 16-point floor")
+        let opaque = glyphs.first { pixel(output.foreground, x: $0.x, y: $0.y)[3] == 255 }
+        let ink = try XCTUnwrap(opaque)
+        XCTAssertEqual(pixel(output.foreground, x: ink.x, y: ink.y), [185, 185, 185, 255])
+    }
+
+    func testParagraphKeepsSourceWidthInsteadOfFillingWholeGlass() async throws {
+        let source = frame(width: 800, height: 200)
+        let original = "Original paragraph"
+        let bounds = PixelRect(x: 30, y: 24, width: 220, height: 55)
+        let text = TextRegion(id: UUID(), sourceRevision: 1, text: original, bounds: bounds,
+            spans: [OCRSpan(textRange: UTF16Range(location: 0, length: original.utf16.count),
+                            bounds: PixelRect(x: 30, y: 24, width: 220, height: 18), confidence: 1)])
+        let output = try await TranslationRenderer().render(frame: source,
+            translations: [RegionTranslation(region: text, text: "This translated paragraph stays in the original reading area.")])
+        let backing = try XCTUnwrap(output.backingRegions.first?.bounds)
+        XCTAssertLessThanOrEqual(backing.x + backing.width, 30 + Int(220 * 1.15) + 4)
+        XCTAssertLessThan(backing.width, source.surface.size.width / 2)
+    }
+
     private func region(text: String, bounds: PixelRect) -> TextRegion {
         TextRegion(id: UUID(), sourceRevision: 1, text: text, bounds: bounds, spans: [])
     }

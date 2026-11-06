@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ("Show / Hide Glass", #selector(toggleGlass), ""),
             ("OCR Diagnostics", #selector(showDiagnostics), ""),
             ("Pause / Resume", #selector(togglePause), ""),
+            ("Copy Screenshot", #selector(copyScreenshot), ""),
             ("Reset Glass Size for This Display", #selector(resetGlass), ""),
             ("Quit ReadingGlass", #selector(quit), "q")
         ] {
@@ -71,5 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showDiagnostics() { windows?.showDiagnostics() }
     @objc private func togglePause() { model?.togglePause() }
     @objc private func resetGlass() { model?.resetGlassToDisplay() }
+    @objc private func copyScreenshot() { model?.copyScreenshot() }
     @objc private func quit() { NSApp.terminate(nil) }
 }

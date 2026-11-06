@@ -30,6 +30,18 @@ struct TextRegion: Sendable, Equatable {
             bounds.x + bounds.width >= frame.surface.size.width - margin ||
             bounds.y + bounds.height >= frame.surface.size.height - margin
     }
+
+    func mayBeCutOff(in frame: CapturedFrame) -> Bool {
+        if touchesEdge(of: frame) { return true }
+        guard kind != .label else { return false }
+        let heights = spans.map { $0.bounds.height }.sorted()
+        let lineHeight = heights.isEmpty ? bounds.height : heights[heights.count / 2]
+        // Vision may omit a clipped last word. Preserve the preceding text
+        // even when the display has no room for a wider capture.
+        let scale = max(frame.scaleX, frame.scaleY)
+        let margin = min(Int(64 * scale), max(Int(12 * scale), lineHeight * 2))
+        return bounds.x + bounds.width >= frame.surface.size.width - margin
+    }
 }
 
 struct TranslationProgress: Sendable, Equatable {

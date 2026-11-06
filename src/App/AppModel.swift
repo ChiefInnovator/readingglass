@@ -26,6 +26,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var sourceLanguageNames: [String: String] = [:]
     @Published private(set) var backgroundReady = false
     @Published private(set) var translationProgress: TranslationProgress?
+    @Published private(set) var isCopyingScreenshot = false
+    @Published private(set) var clipboardFeedback: String?
     @Published var showsSizeControls = false {
         didSet { onToolbarLayoutChanged?() }
     }
@@ -68,9 +70,13 @@ final class AppModel: ObservableObject {
     private var currentPresentation: (TranslationPresentation, String)?
     private var unloadingModel = false
     private var screenObserver: NSObjectProtocol?
+    private var screenshotTask: Task<Void, Never>?
+    private var clipboardFeedbackTask: Task<Void, Never>?
 
     var currentDisplay: DisplayGeometry? { displays.first { $0.id == selectedDisplayID } }
     var toolbarStatus: String {
+        if let clipboardFeedback { return clipboardFeedback }
+        if isCopyingScreenshot { return "Copying screenshot…" }
         if isPaused { return "Paused" }
         if !hasPermission { return "Screen access needed" }
         if !modelReady { return "Preparing model…" }
@@ -245,6 +251,41 @@ final class AppModel: ObservableObject {
         setGlassFrame(CaptureGeometry.initialGlassFrame(on: display))
     }
 
+    func copyScreenshot() {
+        guard !isCopyingScreenshot, let display = currentDisplay else { return }
+        let configuration = CaptureConfiguration(display: display, rect: glassFrame, stamp: currentStamp)
+        isCopyingScreenshot = true
+        clipboardFeedback = nil
+        clipboardFeedbackTask?.cancel()
+        screenshotTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.isCopyingScreenshot = false }
+            do {
+                let surface = try await self.capture.screenshot(configuration: configuration)
+                try Task.checkCancellation()
+                guard self.glassFrame == configuration.rect, self.selectedDisplayID == display.id else {
+                    self.showClipboardFeedback("Glass moved — copy again")
+                    return
+                }
+                try ScreenshotClipboard.copy(surface)
+                self.showClipboardFeedback("Screenshot copied")
+            } catch is CancellationError {
+                return
+            } catch {
+                self.showClipboardFeedback("Screenshot failed — retry")
+                self.status = error.localizedDescription
+            }
+        }
+    }
+
+    private func showClipboardFeedback(_ message: String) {
+        clipboardFeedback = message
+        clipboardFeedbackTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            self?.clipboardFeedback = nil
+        }
+    }
+
     func setGlassFrame(_ proposed: CGRect) {
         guard let display = currentDisplay else { return }
         glassFrame = CaptureGeometry.clampedGlassFrame(proposed, on: display)
@@ -280,6 +321,8 @@ final class AppModel: ObservableObject {
     func showDiagnostics() { onShowDiagnostics?() }
 
     func shutdown() {
+        screenshotTask?.cancel()
+        clipboardFeedbackTask?.cancel()
         settleTask?.cancel()
         captureTask?.cancel()
         recognizedText = ""

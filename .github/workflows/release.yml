@@ -1,0 +1,36 @@
+name: Build preview release
+on:
+  push:
+    tags: ["v[0-9]*"]
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      READINGGLASS_SIGN_IDENTITY: "-"
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Build and package
+        run: ./scripts/package-release.sh "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReadingGlass-${{ github.ref_name }}-macOS-arm64
+          path: .build/releases/*
+      - name: Publish preview release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          notes="docs/releases/${version}.md"
+          if [ -f "$notes" ]; then
+            gh release create "$RELEASE_TAG" .build/releases/*.zip .build/releases/SHA256SUMS --verify-tag --prerelease --title "ReadingGlass ${RELEASE_TAG} preview" --notes-file "$notes"
+          else
+            gh release create "$RELEASE_TAG" .build/releases/*.zip .build/releases/SHA256SUMS --verify-tag --prerelease --title "ReadingGlass ${RELEASE_TAG} preview" --generate-notes
+          fi

@@ -7,11 +7,18 @@
 - [Source and build instructions](https://github.com/ChiefInnovator/readingglass): Swift source for Apple silicon Macs running macOS 15 or later.
 - [Issue tracker](https://github.com/ChiefInnovator/readingglass/issues): bug reports and feature requests.
 
+- [Preview releases](https://github.com/ChiefInnovator/readingglass/releases): downloadable builds, checksums and versioned notes.
+- [Source license](https://github.com/ChiefInnovator/readingglass/blob/main/LICENSE): PolyForm Strict 1.0.0.
+
 ## Current facts
-- Version 0.1.0 is a source-build preview; no notarized installer or Mac App Store release is currently provided.
+- Version 0.1.0 is an early preview. GitHub Releases provides preview downloads; they are not notarized, and macOS may prevent them from opening. Source builds are also available.
 - Screen recognition uses Apple Vision. Translation uses a locally installed TranslateGemma model. Background refinement uses Core ML.
 - Model files are downloaded separately. The translation model download is approximately 2.22 GB.
 - Captured images and recognized screen text are not uploaded by the app or written to a screen-content archive.
 - Language quality and difficult layouts still require broader validation.
+
+- Copy Screenshot copies the original UI behind the glass to the PNG clipboard at full capture resolution. It works while paused, excludes ReadingGlass, and saves no file. The user chooses where to paste.
+- Source is available under PolyForm Strict 1.0.0; it is not OSI-approved open source. Model/library licenses are separate.
+- Created by [Richard Crane](https://inventingfirewith.ai), powered by [MILL5](https://www.mill5.com). [Inventing Fire with AI](https://inventingfirewith.ai) is Richard's podcast.
 
 This optional text index is provided for readable discovery; it is not a requirement for search or AI indexing.

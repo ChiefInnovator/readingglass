@@ -101,18 +101,14 @@ actor TranslationPipeline {
             do {
                 let scale = max(work.result.frame.scaleX, work.result.frame.scaleY)
                 let clippedRight = work.regions.contains {
-                    let heights = $0.spans.map { $0.bounds.height }.sorted()
-                    let lineHeight = heights.isEmpty ? $0.bounds.height : heights[heights.count / 2]
-                    // Vision can omit a cut-off final word, leaving its last
-                    // complete word slightly inside the capture boundary.
-                    let edgeMargin = min(Int(64 * scale), max(Int(12 * scale), lineHeight * 2))
-                    return $0.confidence >= 0.6 && $0.kind != .label &&
-                    $0.bounds.x + $0.bounds.width >= work.result.frame.surface.size.width - edgeMargin
+                    $0.confidence >= 0.6 && $0.kind != .label &&
+                    $0.mayBeCutOff(in: work.result.frame) &&
+                    $0.bounds.x + $0.bounds.width >= work.result.frame.surface.size.width - Int(64 * scale)
                 }
                 if clippedRight, await requestWidth(
                     max(work.result.frame.captureRectGlobalPoints.width * 1.2,
                         work.result.frame.captureRectGlobalPoints.width + 160), for: work) { continue }
-                let page = work.regions.filter { $0.confidence >= 0.6 && !$0.touchesEdge(of: work.result.frame) }
+                let page = work.regions.filter { $0.confidence >= 0.6 && !$0.mayBeCutOff(in: work.result.frame) }
                     .map(\.text).joined(separator: "\n")
                 var translated: [RegionTranslation] = []
                 var unknownLanguage = false
@@ -123,7 +119,7 @@ actor TranslationPipeline {
                 var candidates: [(TextRegion, String)] = []
                 var resizing = false
                 for region in work.regions {
-                    if region.touchesEdge(of: work.result.frame) {
+                    if region.mayBeCutOff(in: work.result.frame) {
                         progress.clipped += 1
                         continue
                     }

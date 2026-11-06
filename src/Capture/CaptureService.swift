@@ -52,6 +52,42 @@ actor CaptureService {
         }
     }
 
+    /// A fresh one-shot image, independent of translation or pause state.
+    func screenshot(configuration: CaptureConfiguration) async throws -> RasterSurface {
+        try Task.checkCancellation()
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        guard let display = content.displays.first(where: { $0.displayID == configuration.display.id }) else {
+            throw CaptureError.displayUnavailable
+        }
+        let ownApps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        guard !ownApps.isEmpty else { throw CaptureError.applicationExclusionUnavailable }
+        let filter = SCContentFilter(display: display, excludingApplications: ownApps, exceptingWindows: [])
+        let settings = SCStreamConfiguration()
+        settings.sourceRect = try CaptureGeometry.sourceRect(glassFrame: configuration.rect, display: configuration.display)
+        let pixels = CaptureGeometry.pixelSize(for: configuration.rect, scale: configuration.display.scale)
+        guard pixels.width > 0, pixels.height > 0 else { throw CaptureError.invalidFrame }
+        settings.width = Int(pixels.width)
+        settings.height = Int(pixels.height)
+        settings.showsCursor = false
+        settings.showMouseClicks = false
+        settings.shouldBeOpaque = true
+        settings.pixelFormat = kCVPixelFormatType_32BGRA
+        settings.colorSpaceName = CGColorSpace.sRGB
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: settings)
+        try Task.checkCancellation()
+        guard image.width > 0, image.height > 0,
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: image.width, height: image.height,
+                  bitsPerComponent: 8, bytesPerRow: image.width * 4, space: colorSpace,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            throw CaptureError.invalidFrame
+        }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard let bytes = context.data else { throw CaptureError.invalidFrame }
+        return RasterSurface(size: PixelSize(width: image.width, height: image.height), bytesPerRow: image.width * 4,
+                             pixels: Data(bytes: bytes, count: image.width * image.height * 4))
+    }
+
     /// A stream belongs to one immutable geometry revision. Repositioning stops
     /// and replaces the stream rather than relabelling in-flight old frames.
     func start(configuration: CaptureConfiguration) async throws

@@ -2,6 +2,82 @@ import XCTest
 @testable import ReadingGlass
 
 final class ReadingPipelineTests: XCTestCase, @unchecked Sendable {
+    func testChangingBackgroundDoesNotStarveStableTextRecognition() async throws {
+        let firstStarted = expectation(description: "First OCR starts")
+        let newestStarted = expectation(description: "Newest background is scanned")
+        let line = OCRLine(text: "Stable text", bounds: PixelRect(x: 4, y: 4, width: 8, height: 4),
+                           spans: [], confidence: 1)
+        let recognizer = ControlledRecognizer(lines: [line]) { sequence in
+            if sequence == 1 { firstStarted.fulfill() }
+            if sequence == 16 { newestStarted.fulfill() }
+        }
+        let events = await MainActor.run { PipelineEventCollector() }
+        let pipeline = ReadingPipeline(recognizer: recognizer, minimumInterval: .zero) { events.record($0) }
+        let stamp = makeStamp(1)
+        await pipeline.activate(stamp: stamp)
+        await pipeline.consume(animatedFrame(1, stamp: stamp, background: 1))
+        await fulfillment(of: [firstStarted], timeout: 3)
+        for sequence in 2...16 {
+            await pipeline.consume(animatedFrame(UInt64(sequence), stamp: stamp, background: UInt8(sequence)))
+        }
+        await recognizer.succeed(1)
+        await fulfillment(of: [newestStarted], timeout: 3)
+        let beforeNewestFinishes = await events.recognizedSequences
+        XCTAssertEqual(beforeNewestFinishes, [16], "Stable text must publish despite ongoing background changes")
+        await recognizer.succeed(16)
+        await pipeline.waitUntilIdle()
+        let pendingBefore = await events.pendingCount
+        await pipeline.consume(animatedFrame(17, stamp: stamp, background: 17))
+        await pipeline.waitUntilIdle()
+        let pendingAfter = await events.pendingCount
+        let peak = await recognizer.maximumActive
+        XCTAssertEqual(pendingAfter, pendingBefore, "Background-only changes must not clear valid text")
+        XCTAssertEqual(peak, 1)
+    }
+
+    func testChangedTextPixelsStillRejectInFlightResult() async throws {
+        let firstStarted = expectation(description: "First OCR starts")
+        let secondStarted = expectation(description: "Changed text is scanned")
+        let line = OCRLine(text: "Stable text", bounds: PixelRect(x: 4, y: 4, width: 8, height: 4),
+                           spans: [], confidence: 1)
+        let recognizer = ControlledRecognizer(lines: [line]) { sequence in
+            if sequence == 1 { firstStarted.fulfill() }
+            if sequence == 2 { secondStarted.fulfill() }
+        }
+        let events = await MainActor.run { PipelineEventCollector() }
+        let pipeline = ReadingPipeline(recognizer: recognizer, minimumInterval: .zero) { events.record($0) }
+        let stamp = makeStamp(1)
+        await pipeline.activate(stamp: stamp)
+        await pipeline.consume(animatedFrame(1, stamp: stamp, background: 1))
+        await fulfillment(of: [firstStarted], timeout: 3)
+        await pipeline.consume(animatedFrame(2, stamp: stamp, background: 2, glyph: 20))
+        await recognizer.succeed(1)
+        await fulfillment(of: [secondStarted], timeout: 3)
+        let stale = await events.recognizedSequences
+        XCTAssertTrue(stale.isEmpty)
+        await recognizer.succeed(2)
+        await pipeline.waitUntilIdle()
+        let fresh = await events.recognizedSequences
+        XCTAssertEqual(fresh, [2])
+    }
+
+    private func animatedFrame(_ sequence: UInt64, stamp: RevisionStamp, background: UInt8,
+                               glyph: UInt8 = 100) -> CapturedFrame {
+        var pixels = Data(repeating: 255, count: 32 * 16 * 4)
+        for y in 4..<8 {
+            for x in 4..<12 {
+                let offset = (y * 32 + x) * 4
+                pixels.replaceSubrange(offset..<(offset + 3), with: [glyph, glyph, glyph])
+            }
+        }
+        let corner = (15 * 32 + 31) * 4
+        pixels.replaceSubrange(corner..<(corner + 3), with: [background, background, background])
+        return CapturedFrame(id: FrameID(sequence: sequence, capturedAtNanoseconds: sequence), stamp: stamp,
+            displayID: 1, captureRectGlobalPoints: PointRect(CGRect(x: 0, y: 0, width: 32, height: 16)),
+            surface: RasterSurface(size: PixelSize(width: 32, height: 16), bytesPerRow: 128, pixels: pixels),
+            scaleX: 1, scaleY: 1)
+    }
+
     func testOnlyOneRecognitionRunsAndNewestPendingFrameWins() async throws {
         let firstStarted = expectation(description: "First recognition starts")
         let newestStarted = expectation(description: "Newest pending recognition starts")
@@ -177,8 +253,10 @@ private actor ControlledRecognizer: Recognizing {
     private(set) var calls: [UInt64] = []
     private(set) var maximumActive = 0
     private var active = 0
+    private let lines: [OCRLine]
 
-    init(onStart: @escaping @Sendable (UInt64) -> Void) {
+    init(lines: [OCRLine] = [], onStart: @escaping @Sendable (UInt64) -> Void) {
+        self.lines = lines
         self.onStart = onStart
     }
 
@@ -197,7 +275,7 @@ private actor ControlledRecognizer: Recognizing {
         guard let request = waiting.removeValue(forKey: sequence) else { return }
         active -= 1
         request.continuation.resume(returning: OCRResult(
-            frame: request.frame, lines: [], supportedLanguages: ["en-US"], elapsedSeconds: 0
+            frame: request.frame, lines: lines, supportedLanguages: ["en-US"], elapsedSeconds: 0
         ))
     }
 

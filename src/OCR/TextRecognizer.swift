@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Vision
 import NaturalLanguage
 
@@ -42,7 +43,7 @@ actor TextRecognizer: Recognizing {
                     request.recognitionLanguages = manualLanguage == "en-US" ? [manualLanguage] :
                         [manualLanguage] + (supported.contains("en-US") ? ["en-US"] : [])
                 }
-                let image = try frame.surface.makeCGImage()
+                let image = try Self.recognitionImage(for: frame.surface)
                 try VNImageRequestHandler(cgImage: image, orientation: .up).perform([request])
             } catch {
                 throw RecognitionError.failed(code: (error as NSError).code)
@@ -79,6 +80,27 @@ actor TextRecognizer: Recognizing {
             return OCRResult(frame: frame, lines: lines, supportedLanguages: supported,
                              elapsedSeconds: ProcessInfo.processInfo.systemUptime - started)
         }
+    }
+
+    /// Bound Vision's work on very large Retina captures. Normalized Vision
+    /// boxes are still mapped back to the original full-resolution surface.
+    static func recognitionImage(for surface: RasterSurface) throws -> CGImage {
+        let original = try surface.makeCGImage()
+        let width = Double(surface.size.width), height = Double(surface.size.height)
+        let factor = min(1, 3072 / max(width, height), sqrt(4_000_000 / (width * height)))
+        guard factor < 1 else { return original }
+        let targetWidth = max(1, Int((width * factor).rounded(.down)))
+        let targetHeight = max(1, Int((height * factor).rounded(.down)))
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: targetWidth, height: targetHeight,
+                  bitsPerComponent: 8, bytesPerRow: targetWidth * 4, space: space,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            throw RasterError.invalidSurface
+        }
+        context.interpolationQuality = .high
+        context.draw(original, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+        guard let image = context.makeImage() else { throw RasterError.invalidSurface }
+        return image
     }
 
     private static func pixelRect(_ normalized: CGRect, size: PixelSize) -> PixelRect {

@@ -36,6 +36,9 @@ struct GlassToolbarView: View {
             Spacer(minLength: 0)
             Button(model.isPaused ? "Resume" : "Pause") { model.togglePause() }.frame(width: 58)
             OriginalButton { model.holdOriginal($0) }.frame(width: 28, height: 24)
+            Button { model.copyScreenshot() } label: { Image(systemName: "camera") }
+                .disabled(model.isCopyingScreenshot).help("Copy the current area behind the glass as an image")
+                .accessibilityLabel("Copy screenshot").frame(width: 28)
             Button("Read full text") { model.showFullTranslation() }.disabled(model.overflow.isEmpty)
                 .help("Read translations that do not fit in the glass").frame(width: 90)
             Button { model.retryTranslation() } label: { Image(systemName: "arrow.clockwise") }

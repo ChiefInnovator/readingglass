@@ -38,9 +38,13 @@ Dragging uses the pointer offset from mouse-down and keeps the toolbar/glass rel
 
 Capture runs at 15 fps with bounded frame delivery. Accurate Vision OCR is limited to one active job and one newest pending frame. Geometry/language changes invalidate stale work. Translation caches and captured content remain in memory.
 
+Vision input is bounded to 3,072 pixels per side and four megapixels; OCR coordinates map back to the full-resolution capture. Changed background pixels do not indefinitely invalidate stable recognized text. Each published line is checked against the latest capture before reuse.
+
 Overlapping OCR fragments are resolved before paragraph grouping. Compact numeric labels, uncertain regions and clipped input retain original pixels. Translation output must preserve numeric tokens. Progress distinguishes translated, unchanged, uncertain, clipped and failed regions.
 
-Core Text produces separate foreground and background rasters. Output rectangles cannot overlap. Text respects a 16-point minimum; unsafe fits use Read full text. Translation and restoration share an inference gate so cosmetic work cannot monopolize the model runtime. Background refinement does not alter foreground pixels.
+Core Text produces separate foreground and background rasters. Output rectangles cannot overlap. OCR glyph measurements guide source-matched font size, ink position and color. The original text footprint is preferred; nearby space is bounded by other content and visible separators. Size adjustment is limited to 10% below the source estimate, with a 10-point floor; missing glyph measurements retain the 16-point fallback. Unsafe fits use Read full text. Translation and restoration share an inference gate so cosmetic work cannot monopolize the model runtime. Background refinement does not alter foreground pixels.
+
+Copy Screenshot uses a fresh ScreenCaptureKit one-shot capture with the entire app excluded. It works independently of translation and pause state, verifies that the glass has not moved, and writes an in-memory PNG to the system clipboard. It neither saves a file nor sends the image to another service. Tests use an isolated pasteboard.
 
 ## Validation
 
@@ -59,3 +63,5 @@ Never commit captured private content, local model weights, credentials, signing
 ## Website
 
 The Pages workflow validates and uploads only `site/`. No app binaries or local model weights are deployed. See [site publishing](site-publishing.md) for search metadata and deployment details.
+
+Version-matched `vMAJOR.MINOR.PATCH` tags run the preview release workflow. `scripts/package-release.sh` builds arm64 Release configuration, checks the bundle signature and required resources, and creates a ZIP plus SHA-256 checksum. CI packages use ad-hoc signing and are not notarized.

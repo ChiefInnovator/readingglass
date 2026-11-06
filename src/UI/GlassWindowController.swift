@@ -101,7 +101,7 @@ final class GlassWindowController: NSObject, NSWindowDelegate {
     private func positionWindows(_ frame: CGRect) {
         glass.setFrame(frame, display: true)
         let screen = model.currentDisplay?.visibleFrame ?? frame
-        let desiredWidth: CGFloat = (model.showsSizeControls ? 1010 : 790) + (model.displays.count > 1 ? 130 : 0)
+        let desiredWidth: CGFloat = (model.showsSizeControls ? 1050 : 830) + (model.displays.count > 1 ? 130 : 0)
         let width = min(desiredWidth, max(1, screen.width - 32))
         let proposedX: CGFloat
         if let dragStart {
