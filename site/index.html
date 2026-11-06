@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ReadingGlass — Local screen translation for macOS</title>
+  <meta name="description" content="ReadingGlass is a native macOS screen translator. Move a reading glass over text and read its translation in place, with recognition and AI running on your Mac.">
+  <meta name="robots" content="index,follow,max-image-preview:large">
+  <meta name="theme-color" content="#10293b">
+  <link rel="canonical" href="https://chiefinnovator.github.io/readingglass/">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="sitemap" type="application/xml" href="sitemap.xml">
+  <link rel="stylesheet" href="styles.css">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ReadingGlass">
+  <meta property="og:title" content="ReadingGlass — Read your screen in your language">
+  <meta property="og:description" content="A movable reading glass for macOS. Translate text in place with on-device recognition and AI.">
+  <meta property="og:url" content="https://chiefinnovator.github.io/readingglass/">
+  <meta property="og:image" content="https://chiefinnovator.github.io/readingglass/assets/social-card.png">
+  <meta property="og:image:alt" content="ReadingGlass: translate your screen and keep your text on your Mac">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="ReadingGlass — Local screen translation for macOS">
+  <meta name="twitter:description" content="Read translated text directly over your screen. Built for Mac, with on-device AI.">
+  <meta name="twitter:image" content="https://chiefinnovator.github.io/readingglass/assets/social-card.png">
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@graph":[
+    {"@type":"WebSite","@id":"https://chiefinnovator.github.io/readingglass/#website","name":"ReadingGlass","url":"https://chiefinnovator.github.io/readingglass/","inLanguage":"en"},
+    {"@type":"SoftwareApplication","@id":"https://chiefinnovator.github.io/readingglass/#app","name":"ReadingGlass","url":"https://chiefinnovator.github.io/readingglass/","description":"A native macOS reading glass that translates screen text in place using on-device recognition, translation and background refinement.","applicationCategory":"UtilitiesApplication","operatingSystem":"macOS 15 or later on Apple silicon","softwareVersion":"0.1.0","softwareRequirements":"Apple silicon Mac; macOS 15 or later; Screen Recording permission; downloaded local translation model.","image":"https://chiefinnovator.github.io/readingglass/assets/app-icon.png","author":{"@type":"Person","name":"Richard Crane","url":"https://github.com/ChiefInnovator"}},
+    {"@type":"SoftwareSourceCode","name":"ReadingGlass source code","codeRepository":"https://github.com/ChiefInnovator/readingglass","programmingLanguage":"Swift","runtimePlatform":"macOS","isPartOf":{"@id":"https://chiefinnovator.github.io/readingglass/#app"}},
+    {"@type":"FAQPage","mainEntity":[
+      {"@type":"Question","name":"What is ReadingGlass?","acceptedAnswer":{"@type":"Answer","text":"ReadingGlass is a native macOS utility that translates screen text inside a movable, click-through reading glass. Recognition, translation and background refinement run on your Mac."}},
+      {"@type":"Question","name":"Is my screen text sent to a cloud AI service?","acceptedAnswer":{"@type":"Answer","text":"No. Screen recognition, translation and background refinement run locally. Model files are downloaded separately; captured images and recognized text are not uploaded by the app."}},
+      {"@type":"Question","name":"Does ReadingGlass work offline?","acceptedAnswer":{"@type":"Answer","text":"Translation runs locally after the required model files are installed. Initial model downloads and development-tool installation require an internet connection."}},
+      {"@type":"Question","name":"What does ReadingGlass require?","acceptedAnswer":{"@type":"Answer","text":"An Apple silicon Mac running macOS 15 or later, Screen Recording permission, and the local translation model. Building from source also requires Xcode and uv for the one-time background-model preparation."}},
+      {"@type":"Question","name":"How do I get ReadingGlass?","acceptedAnswer":{"@type":"Answer","text":"ReadingGlass is currently a source-build preview. Get the source and build instructions from its GitHub repository. A notarized installer and Mac App Store release are not currently provided."}}
+    ]}
+  ]}
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header wrap">
+    <a class="brand" href="./" aria-label="ReadingGlass home"><img src="assets/mark.svg" alt="" width="36" height="36">ReadingGlass</a>
+    <nav aria-label="Main navigation"><a href="#how-it-works">How it works</a><a href="#questions">Questions</a><a class="repo-link" href="https://github.com/ChiefInnovator/readingglass">GitHub</a></nav>
+  </header>
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <div class="intro">
+        <p class="release">For Apple silicon Macs · Source-build preview</p>
+        <h1 id="hero-title">Read your screen.<br>In your language.</h1>
+        <p class="lede">Move a reading glass over text and see its translation right where you’re looking. Your screen stays on your Mac.</p>
+        <div class="actions"><a class="button primary" href="#get-started">Build for macOS</a><a class="button secondary" href="https://github.com/ChiefInnovator/readingglass">Explore the source</a></div>
+        <p class="requirements">macOS 15+ · Apple silicon · On-device AI</p>
+      </div>
+      <div class="demo" aria-label="Interactive illustration of ReadingGlass, not a live screen capture">
+        <div class="window-title"><span class="window-dots" aria-hidden="true">● ● ●</span><span>A note from tomorrow</span></div>
+        <div class="document"><p class="document-label">Travel notes</p><p class="source-note">El tren sale mañana a las nueve.</p><p class="document-line">Nos vemos en la estación.</p></div>
+        <div class="demo-glass"><div class="demo-toolbar"><img src="assets/mark.svg" alt="" width="25" height="25"><strong>ReadingGlass</strong><span>English</span><span class="local-pill">On your Mac</span></div><p id="demo-text">The train leaves tomorrow at nine.</p></div>
+        <div class="demo-controls"><span>Same place. A different language.</span><button id="demo-toggle" type="button" aria-pressed="false" aria-controls="demo-text">Show original</button></div>
+      </div>
+    </section>
+    <section class="definition wrap" aria-labelledby="definition-title">
+      <h2 id="definition-title">A reading tool, right on your screen.</h2>
+      <p>ReadingGlass is a native macOS utility that translates screen text inside a movable, click-through reading glass. Recognition, translation and background refinement run on your Mac.</p>
+    </section>
+    <section class="features wrap" id="how-it-works" aria-label="How ReadingGlass works">
+      <article><span class="feature-symbol" aria-hidden="true">↔</span><h2>Place it over the words.</h2><p>Drag the toolbar to position the glass. Adjust its size, or let it widen when text needs more room. It stays on one display.</p></article>
+      <article><span class="feature-symbol" aria-hidden="true">Aa</span><h2>Read in place.</h2><p>Choose a target language. Translated paragraphs appear inside the glass, with an original-view control and a full-text view when needed.</p></article>
+      <article><span class="feature-symbol" aria-hidden="true">⌘</span><h2>Keep using your Mac.</h2><p>The glass passes clicks and scrolling through to the app beneath it. A menu-bar control keeps pause, show/hide and reset close by.</p></article>
+    </section>
+    <section class="privacy-band">
+      <div class="wrap privacy-content"><div><h2>Your text stays here.</h2><p>Screen recognition, translation and background refinement run locally. Model files are downloaded separately; captured images and recognized text are not uploaded by the app.</p></div><div class="privacy-details"><p>No hosted translation service.</p><p>No account required by the app.</p><p>No screen-content archive.</p></div></div>
+    </section>
+    <section class="setup wrap" id="get-started" aria-labelledby="setup-title">
+      <div><p class="release">Current version: 0.1.0 preview</p><h2 id="setup-title">Build it. Try it.</h2><p>ReadingGlass is currently a source-build preview. A notarized installer and Mac App Store release are not currently provided.</p><a class="button primary" href="https://github.com/ChiefInnovator/readingglass#build-and-run">Get build instructions</a></div>
+      <ol class="setup-steps"><li><strong>Prepare your Mac</strong><p>Apple silicon, macOS 15 or later, Xcode, and uv for the one-time background-model preparation.</p></li><li><strong>Build the app</strong><p>Clone the repository and run <code>./scripts/build.sh</code>. The build guide explains the dependencies.</p></li><li><strong>Give it a view</strong><p>Grant Screen Recording permission and install the local translation model. The model download is approximately 2.22 GB.</p></li></ol>
+    </section>
+    <section class="questions wrap" id="questions" aria-labelledby="questions-title">
+      <h2 id="questions-title">A few clear answers.</h2>
+      <details><summary>What is ReadingGlass?</summary><p>ReadingGlass is a native macOS utility that translates screen text inside a movable, click-through reading glass. Recognition, translation and background refinement run on your Mac.</p></details>
+      <details><summary>Is my screen text sent to a cloud AI service?</summary><p>No. Screen recognition, translation and background refinement run locally. Model files are downloaded separately; captured images and recognized text are not uploaded by the app.</p></details>
+      <details><summary>Does ReadingGlass work offline?</summary><p>Translation runs locally after the required model files are installed. Initial model downloads and development-tool installation require an internet connection.</p></details>
+      <details><summary>What does ReadingGlass require?</summary><p>An Apple silicon Mac running macOS 15 or later, Screen Recording permission, and the local translation model. Building from source also requires Xcode and uv for the one-time background-model preparation.</p></details>
+      <details><summary>How do I get ReadingGlass?</summary><p>ReadingGlass is currently a source-build preview. Get the source and build instructions from its <a href="https://github.com/ChiefInnovator/readingglass">GitHub repository</a>. A notarized installer and Mac App Store release are not currently provided.</p></details>
+      <details><summary>Which languages can I use?</summary><p>Choose from the target languages available in the app’s local model. Quality varies by language, screen layout and source text. Not every language pair has been validated.</p></details>
+    </section>
+  </main>
+  <footer class="wrap"><a class="brand" href="./"><img src="assets/mark.svg" alt="" width="28" height="28">ReadingGlass</a><p>Made by <a href="https://github.com/ChiefInnovator">Richard Crane</a>.</p><div><a href="https://github.com/ChiefInnovator/readingglass/issues">Report an issue</a><a href="llms.txt">Text index</a><a href="sitemap.xml">Sitemap</a></div></footer>
+  <script src="site.js" defer></script>
+</body>
+</html>

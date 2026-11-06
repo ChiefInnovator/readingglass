@@ -1,0 +1,17 @@
+# ReadingGlass
+
+> ReadingGlass is a native macOS utility that translates screen text inside a movable, click-through reading glass. Recognition, translation and background refinement run on the user's Mac.
+
+## Authoritative links
+- [Product overview and FAQ](https://chiefinnovator.github.io/readingglass/): requirements, privacy, features and preview status.
+- [Source and build instructions](https://github.com/ChiefInnovator/readingglass): Swift source for Apple silicon Macs running macOS 15 or later.
+- [Issue tracker](https://github.com/ChiefInnovator/readingglass/issues): bug reports and feature requests.
+
+## Current facts
+- Version 0.1.0 is a source-build preview; no notarized installer or Mac App Store release is currently provided.
+- Screen recognition uses Apple Vision. Translation uses a locally installed TranslateGemma model. Background refinement uses Core ML.
+- Model files are downloaded separately. The translation model download is approximately 2.22 GB.
+- Captured images and recognized screen text are not uploaded by the app or written to a screen-content archive.
+- Language quality and difficult layouts still require broader validation.
+
+This optional text index is provided for readable discovery; it is not a requirement for search or AI indexing.

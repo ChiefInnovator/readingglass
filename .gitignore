@@ -1,0 +1,23 @@
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+*.dmg
+*.xcarchive
+.swiftpm/
+.vscode/
+.impeccable/
+.env
+.env.*
+*.p12
+*.p8
+*.pem
+*.key
+# Local investigation history and machine-specific acceptance evidence.
+/docs/SESSION_CONTEXT.md
+/docs/acceptance.md
+/docs/designs/
+/docs/reviews/
+/docs/local-development.md
+/docs/local-tooling.md

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://chiefinnovator.github.io/readingglass/sitemap.xml
