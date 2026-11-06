@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          "site/index.html"
+        ],
+        "createdAt": "2026-11-06T07:34:58.109Z",
+        "reason": "Agent reviewed site/styles.css: definition has 48px block padding (35px on mobile); privacy-band text is inset by its centered wrapper with 60px block padding and horizontal gutters (40px block padding on mobile); privacy-details has 30px left padding, and its border is removed on mobile. These three detector reports are false positives; preserve the layout."
+      }
+    ]
+  }
+}
