@@ -2,8 +2,8 @@ import CryptoKit
 import Foundation
 import NaturalLanguage
 
-/// Translation is independent of capture cadence: one job executes, and only
-/// the newest different text/layout is retained while that job is cancelled.
+/// Finish one immutable snapshot at a time. Retain only the newest pending
+/// text/layout, and publish one composite after all its regions have settled.
 actor TranslationPipeline {
     typealias Handler = @MainActor @Sendable (TranslationEvent) -> Void
     private struct Work {
@@ -31,7 +31,8 @@ actor TranslationPipeline {
     private var latest: Work?
     private var pending: Work?
     private var runningKey: String?
-    private var runningWasCancelled = false
+    private var runningGeneration: UInt64?
+    private var completedKey: String?
     private var worker: Task<Void, Never>?
     private var cache: [String: Cached] = [:]
 
@@ -57,7 +58,7 @@ actor TranslationPipeline {
         previous = []
         pending = nil
         latest = nil
-        runningKey = nil
+        completedKey = nil
         await translator.cancel()
     }
 
@@ -66,7 +67,7 @@ actor TranslationPipeline {
         stamp = nil
         pending = nil
         latest = nil
-        runningKey = nil
+        completedKey = nil
         await translator.cancel()
     }
 
@@ -85,17 +86,22 @@ actor TranslationPipeline {
         previous = regions
         let work = Work(result: result, regions: regions, key: key, generation: generation)
         latest = work
-        if runningKey == key && !runningWasCancelled { return }
+        if runningKey == key, runningGeneration == generation {
+            // The newest screen matches the job already executing. A queued
+            // intermediate screen must not run after this one completes.
+            pending = nil
+            return
+        }
+        if worker == nil, completedKey == key { return }
         pending = work
         if worker == nil { worker = Task { await self.run() } }
-        else if runningKey != nil { runningWasCancelled = true; await translator.cancel() }
     }
 
     private func run() async {
         while let work = pending {
             pending = nil
             runningKey = work.key
-            runningWasCancelled = false
+            runningGeneration = work.generation
             guard current(work) else { continue }
             await onEvent(.working(work.result.frame.stamp, work.key))
             do {
@@ -113,11 +119,8 @@ actor TranslationPipeline {
                 var translated: [RegionTranslation] = []
                 var unknownLanguage = false
                 var incompleteRegions = 0
-                var publishedCount = 0
-                var publishedFrame: FrameID?
                 var progress = TranslationProgress(total: work.regions.count)
                 var candidates: [(TextRegion, String)] = []
-                var resizing = false
                 for region in work.regions {
                     if region.mayBeCutOff(in: work.result.frame) {
                         progress.clipped += 1
@@ -177,19 +180,6 @@ actor TranslationPipeline {
                     }
                     translated.append(RegionTranslation(region: region, text: output))
                     progress.translated += 1
-                    if current(work), let newest = latest {
-                        let partial = try await renderer.render(frame: newest.result.frame, translations: translated,
-                                                                occupiedRegions: newest.regions)
-                        if let width = partial.suggestedWidth, await requestWidth(width, for: work) {
-                            resizing = true
-                            break
-                        }
-                        if current(work), latest?.result.frame.id == newest.result.frame.id {
-                            await onEvent(.presented(partial, work.key))
-                            publishedCount = translated.count
-                            publishedFrame = newest.result.frame.id
-                        }
-                    }
                     } catch {
                         guard current(work) else { throw CancellationError() }
                         incompleteRegions += 1
@@ -197,43 +187,37 @@ actor TranslationPipeline {
                     }
                     if current(work) { await onEvent(.progress(work.result.frame.stamp, work.key, progress)) }
                 }
-                if resizing { continue }
-                guard current(work), let newest = latest else { continue }
+                guard current(work) else { continue }
+                let presentation = try await renderer.render(frame: work.result.frame, translations: translated,
+                                                              occupiedRegions: work.regions)
+                guard current(work) else { continue }
+                if let width = presentation.suggestedWidth, await requestWidth(width, for: work) { continue }
+                await onEvent(.presented(presentation, work.key))
+                guard current(work) else { continue }
+                progress.finished = true
+                await onEvent(.progress(work.result.frame.stamp, work.key, progress))
                 if translated.isEmpty && unknownLanguage {
-                    await onEvent(.unavailable(work.result.frame.stamp, work.key, "Choose a source language to translate this text."))
+                    await onEvent(.unavailable(work.result.frame.stamp, work.key, "Choose a source language to translate this snapshot."))
                 } else if translated.isEmpty && incompleteRegions > 0 {
                     await onEvent(.unavailable(work.result.frame.stamp, work.key,
-                        "Translation could not finish. Original text is still visible; pause and resume to retry."))
-                } else {
-                    if publishedCount != translated.count || publishedFrame != newest.result.frame.id {
-                        let presentation = try await renderer.render(frame: newest.result.frame, translations: translated,
-                                                                      occupiedRegions: newest.regions)
-                        if let width = presentation.suggestedWidth, await requestWidth(width, for: work) { continue }
-                        guard current(work) else { continue }
-                        guard latest?.result.frame.id == newest.result.frame.id else {
-                            pending = latest
-                            continue
-                        }
-                        await onEvent(.presented(presentation, work.key))
-                    }
+                        "Translation could not finish. Original text is still visible; use Retry to try this snapshot again."))
                 }
-                progress.finished = true
-                if current(work) { await onEvent(.progress(work.result.frame.stamp, work.key, progress)) }
+                if current(work) { completedKey = work.key }
             } catch {
                 guard current(work) else { continue }
                 let message = error is CancellationError ? "Translation interrupted. Move the glass or retry." :
                     "This region could not be translated completely. Original text is still visible."
                 await onEvent(.unavailable(work.result.frame.stamp, work.key, message))
+                if current(work) { completedKey = work.key }
             }
         }
         runningKey = nil
-        runningWasCancelled = false
+        runningGeneration = nil
         worker = nil
     }
 
     private func current(_ work: Work) -> Bool {
-        !runningWasCancelled && work.generation == generation &&
-        stamp == work.result.frame.stamp && latest?.key == work.key
+        work.generation == generation && stamp == work.result.frame.stamp
     }
 
     private func requestWidth(_ proposed: Double, for work: Work) async -> Bool {
@@ -263,7 +247,7 @@ actor TranslationPipeline {
     private func translateComplete(_ text: String, source: String, target: String) async throws -> String {
         let count = try await translator.countTokens(text)
         let result = try await translator.translate(text: text, source: source, target: target,
-            maximumOutputTokens: min(512, max(96, 3 * count + 32)), deadline: .seconds(3))
+            maximumOutputTokens: min(512, max(96, 3 * count + 32)), deadline: .seconds(10))
         if result.finish == .complete, !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -275,7 +259,7 @@ actor TranslationPipeline {
             let tokens = try await translator.countTokens(child)
             guard tokens <= 128 else { throw TranslationFailure.incomplete }
             let retry = try await translator.translate(text: child, source: source, target: target,
-                maximumOutputTokens: min(512, max(96, 3 * tokens + 32)), deadline: .seconds(3))
+                maximumOutputTokens: min(512, max(96, 3 * tokens + 32)), deadline: .seconds(10))
             guard retry.finish == .complete, !retry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw TranslationFailure.incomplete
             }

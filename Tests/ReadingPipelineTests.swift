@@ -23,19 +23,18 @@ final class ReadingPipelineTests: XCTestCase, @unchecked Sendable {
         await recognizer.succeed(1)
         await fulfillment(of: [newestStarted], timeout: 3)
         let beforeNewestFinishes = await events.recognizedSequences
-        XCTAssertEqual(beforeNewestFinishes, [16], "Stable text must publish despite ongoing background changes")
+        XCTAssertEqual(beforeNewestFinishes, [1], "Finish the frozen snapshot instead of rebasing onto new pixels")
         await recognizer.succeed(16)
         await pipeline.waitUntilIdle()
-        let pendingBefore = await events.pendingCount
-        await pipeline.consume(animatedFrame(17, stamp: stamp, background: 17))
-        await pipeline.waitUntilIdle()
-        let pendingAfter = await events.pendingCount
+        let pendingCount = await events.pendingCount
         let peak = await recognizer.maximumActive
-        XCTAssertEqual(pendingAfter, pendingBefore, "Background-only changes must not clear valid text")
+        let recognized = await events.recognizedSequences
+        XCTAssertEqual(pendingCount, 1, "Background-only changes must not clear valid text")
+        XCTAssertEqual(recognized, [1], "Identical text in a new background must not republish")
         XCTAssertEqual(peak, 1)
     }
 
-    func testChangedTextPixelsStillRejectInFlightResult() async throws {
+    func testChangedTextWaitsForFrozenSnapshotThenPublishesNext() async throws {
         let firstStarted = expectation(description: "First OCR starts")
         let secondStarted = expectation(description: "Changed text is scanned")
         let line = OCRLine(text: "Stable text", bounds: PixelRect(x: 4, y: 4, width: 8, height: 4),
@@ -54,11 +53,11 @@ final class ReadingPipelineTests: XCTestCase, @unchecked Sendable {
         await recognizer.succeed(1)
         await fulfillment(of: [secondStarted], timeout: 3)
         let stale = await events.recognizedSequences
-        XCTAssertTrue(stale.isEmpty)
+        XCTAssertEqual(stale, [1])
         await recognizer.succeed(2)
         await pipeline.waitUntilIdle()
         let fresh = await events.recognizedSequences
-        XCTAssertEqual(fresh, [2])
+        XCTAssertEqual(fresh, [1, 2])
     }
 
     private func animatedFrame(_ sequence: UInt64, stamp: RevisionStamp, background: UInt8,
@@ -108,7 +107,7 @@ final class ReadingPipelineTests: XCTestCase, @unchecked Sendable {
         let recognized = await events.recognizedSequences
         XCTAssertEqual(calls, [1, 3], "Intermediate pending work must be replaced")
         XCTAssertEqual(peak, 1, "Recognition must never overlap")
-        XCTAssertEqual(recognized, [3], "Old content must not publish after new content arrives")
+        XCTAssertEqual(recognized, [1, 3], "Active and newest snapshots each finish without accumulating the intermediate frame")
     }
 
     func testGeometryActivationRejectsInFlightAndLateOldGeometryFrames() async throws {
@@ -199,7 +198,7 @@ final class ReadingPipelineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(pendingCount, 1)
     }
 
-    func testObsoleteFailureCannotReplaceNewContent() async throws {
+    func testFailedSnapshotDoesNotDiscardTheNewestPendingSnapshot() async throws {
         let firstStarted = expectation(description: "Initial recognition starts")
         let newStarted = expectation(description: "Replacement recognition starts")
         let recognizer = ControlledRecognizer { sequence in
@@ -222,7 +221,7 @@ final class ReadingPipelineTests: XCTestCase, @unchecked Sendable {
 
         let failures = await events.failureCount
         let recognized = await events.recognizedSequences
-        XCTAssertEqual(failures, 0)
+        XCTAssertEqual(failures, 1)
         XCTAssertEqual(recognized, [2])
     }
 

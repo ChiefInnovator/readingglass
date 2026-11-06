@@ -50,7 +50,7 @@ final class AppModel: ObservableObject {
     private lazy var restorer = BackgroundInpainter(scheduler: inferenceScheduler)
     private let manifest: TranslationManifest?
     private lazy var pipeline = ReadingPipeline(recognizer: recognizer) { [weak self] event in
-        self?.accept(event)
+        await self?.accept(event)
     }
     private lazy var translation = TranslationPipeline(translator: backend, languageNames: languageNames) { [weak self] event in
         self?.acceptTranslation(event)
@@ -63,6 +63,8 @@ final class AppModel: ObservableObject {
     private var modelTask: Task<Void, Never>?
     private var unloadTask: Task<Void, Never>?
     private var currentOCRSignature: String?
+    private var recognizingSnapshot = false
+    private var snapshotError: String?
     private var languageRevision: UInt64 = 0
     private var visionTags: [String: String] = [:]
     private var refinementTask: Task<Void, Never>?
@@ -80,6 +82,8 @@ final class AppModel: ObservableObject {
         if isPaused { return "Paused" }
         if !hasPermission { return "Screen access needed" }
         if !modelReady { return "Preparing model…" }
+        if recognizingSnapshot { return "Recognizing snapshot…" }
+        if let snapshotError { return snapshotError }
         if let progress = translationProgress {
             if progress.finished, progress.clipped == 0, progress.failed == 0, progress.uncertain == 0,
                !overflow.isEmpty { return "Read full text · \(overflow.count) overflow" }
@@ -90,7 +94,7 @@ final class AppModel: ObservableObject {
         if status.hasPrefix("Starting") { return "Starting capture…" }
         return status
     }
-    var canRetryTranslation: Bool { (translationProgress?.failed ?? 0) > 0 }
+    var canRetryTranslation: Bool { snapshotError != nil || (translationProgress?.failed ?? 0) > 0 }
     private var currentStamp: RevisionStamp {
         RevisionStamp(geometry: revision, language: languageRevision, model: manifest?.revision ?? "missing-model")
     }
@@ -361,6 +365,8 @@ final class AppModel: ObservableObject {
         overflow = []
         translationProgress = nil
         currentOCRSignature = nil
+        recognizingSnapshot = false
+        snapshotError = nil
         currentPresentation = nil
         onPresentation?(nil)
         refinementTask?.cancel()
@@ -412,6 +418,7 @@ final class AppModel: ObservableObject {
                 self.translatedText = ""
                 self.overflow = []
                 self.currentOCRSignature = nil
+                self.recognizingSnapshot = false
                 self.currentPresentation = nil
                 self.refinementTask?.cancel()
                 self.onPresentation?(nil)
@@ -425,23 +432,16 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func accept(_ event: PipelineEvent) {
+    private func accept(_ event: PipelineEvent) async {
         switch event {
         case let .pending(stamp, source):
             guard stamp == currentStamp, !isPaused, !isHidden else { return }
-            translationProgress = nil
             sourceRevision = source
-            recognizedText = ""
-            preview = nil
-            translatedText = ""
-            overflow = []
-            currentOCRSignature = nil
-            currentPresentation = nil
-            onPresentation?(nil)
-            refinementTask?.cancel()
-            status = "Recognizing… First use of a language can take 25 seconds or longer."
+            recognizingSnapshot = true
+            status = "Recognizing snapshot…"
         case let .recognized(result, source):
             guard result.frame.stamp == currentStamp, source == sourceRevision, !isPaused, !isHidden else { return }
+            recognizingSnapshot = false
             recognizedText = result.lines.map(\.text).joined(separator: "\n")
             if let image = try? result.frame.surface.makeCGImage() {
                 preview = NSImage(cgImage: image, size: NSSize(width: result.frame.surface.size.width,
@@ -457,12 +457,22 @@ final class AppModel: ObservableObject {
             }
             measurement = "\(result.frame.surface.size.width) × \(result.frame.surface.size.height) pixels · OCR \(Int(result.elapsedSeconds * 1000)) ms · \(result.lines.count) lines"
             status = result.lines.isEmpty ? "No text detected in this region." : "Recognized · automatic source language"
-            currentOCRSignature = TranslationPipeline.signature(result)
-            if modelReady { Task { await translation.consume(result) } }
+            let signature = TranslationPipeline.signature(result)
+            guard currentOCRSignature != signature else {
+                status = translationProgress?.summary ?? "Snapshot unchanged."
+                return
+            }
+            currentOCRSignature = signature
+            if modelReady {
+                await translation.consume(result)
+                // Backpressure spans OCR, all translation chunks, and the
+                // final render. Capture can only replace its pending frame.
+                await translation.waitUntilIdle()
+            }
         case let .failed(stamp, source, message):
             guard stamp == currentStamp, source == sourceRevision else { return }
-            recognizedText = ""
-            preview = nil
+            recognizingSnapshot = false
+            snapshotError = message
             status = message
         }
     }
@@ -472,6 +482,7 @@ final class AppModel: ObservableObject {
         case let .working(stamp, signature):
             guard stamp == currentStamp, signature == currentOCRSignature, !isPaused, !isHidden else { return }
             translationProgress = nil
+            snapshotError = nil
             refinementTask?.cancel()
             status = "Translating locally to \(targetName)…"
         case let .progress(stamp, signature, progress):
@@ -490,17 +501,16 @@ final class AppModel: ObservableObject {
                   !isPaused, !isHidden else { return }
             translatedText = presentation.regions.map(\.text).joined(separator: "\n\n")
             overflow = presentation.overflow
-            onPresentation?(presentation.regions.isEmpty ? nil : presentation)
-            currentPresentation = presentation.regions.isEmpty ? nil : (presentation, signature)
+            onPresentation?(presentation)
+            currentPresentation = (presentation, signature)
             if translationProgress == nil {
                 status = presentation.regions.isEmpty ? "No translation needed or no readable text." : "Translated locally to \(targetName)"
             }
         case let .unavailable(stamp, signature, message):
             guard stamp == currentStamp, signature == currentOCRSignature, !isPaused, !isHidden else { return }
             status = message
-            currentPresentation = nil
+            snapshotError = message
             refinementTask?.cancel()
-            onPresentation?(nil)
         }
     }
 

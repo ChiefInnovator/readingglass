@@ -8,14 +8,13 @@ enum PipelineEvent: Sendable {
     case failed(RevisionStamp, UInt64, String)
 }
 
-/// One executing recognition and one replaceable pending frame, even across
-/// geometry changes. A cancelled generation never publishes its old result.
+/// One frozen snapshot runs through OCR and its async consumer to completion.
+/// Capture only replaces the pending snapshot; geometry changes invalidate a job.
 actor ReadingPipeline {
-    typealias EventHandler = @MainActor @Sendable (PipelineEvent) -> Void
+    typealias EventHandler = @MainActor @Sendable (PipelineEvent) async -> Void
     private struct Work {
         let frame: CapturedFrame
         let generation: UInt64
-        let sourceRevision: UInt64
     }
 
     private let recognizer: any Recognizing
@@ -27,10 +26,9 @@ actor ReadingPipeline {
     private var digest: SHA256.Digest?
     private var pending: Work?
     private var worker: Task<Void, Never>?
-    private var latestFrame: CapturedFrame?
     private var reference: OCRResult?
     private let clock = ContinuousClock()
-    private var lastScheduledAt: ContinuousClock.Instant?
+    private var lastRecognizedAt: ContinuousClock.Instant?
 
     init(recognizer: any Recognizing, minimumInterval: Duration = .milliseconds(125),
          onEvent: @escaping EventHandler) {
@@ -45,9 +43,8 @@ actor ReadingPipeline {
         pending = nil
         digest = nil
         sourceRevision = 0
-        latestFrame = nil
         reference = nil
-        lastScheduledAt = nil
+        lastRecognizedAt = nil
     }
 
     func stop() {
@@ -55,9 +52,8 @@ actor ReadingPipeline {
         stamp = nil
         pending = nil
         digest = nil
-        latestFrame = nil
         reference = nil
-        lastScheduledAt = nil
+        lastRecognizedAt = nil
     }
 
     func consume(_ frame: CapturedFrame) async {
@@ -65,17 +61,7 @@ actor ReadingPipeline {
         let newDigest = SHA256.hash(data: frame.surface.pixels)
         guard newDigest != digest else { return }
         digest = newDigest
-        latestFrame = frame
-        let textUnchanged = reference.map { Self.textPixelsMatch($0, frame) } ?? false
-        if textUnchanged, let lastScheduledAt, lastScheduledAt.duration(to: clock.now) < .seconds(1) {
-            return
-        }
-        if !textUnchanged { sourceRevision &+= 1 }
-        let work = Work(frame: frame, generation: generation, sourceRevision: sourceRevision)
-        pending = work
-        lastScheduledAt = clock.now
-        if !textUnchanged { await onEvent(.pending(frame.stamp, work.sourceRevision)) }
-        guard work.generation == generation, stamp != nil else { return }
+        pending = Work(frame: frame, generation: generation)
         if worker == nil {
             worker = Task { await self.processQueue() }
         }
@@ -85,32 +71,40 @@ actor ReadingPipeline {
 
     private func processQueue() async {
         while pending != nil {
-            // Throttle recognition without blocking delivery of fresher frames.
             if minimumInterval > .zero { try? await Task.sleep(for: minimumInterval) }
+            // Background changes can reveal newly added text, so scan them at
+            // most once a second. Keep the latest frame during this wait.
+            if let next = pending, let reference, let lastRecognizedAt,
+               Self.textPixelsMatch(reference, next.frame) {
+                let remaining = Duration.seconds(1) - lastRecognizedAt.duration(to: clock.now)
+                if remaining > .zero { try? await Task.sleep(for: remaining) }
+            }
             guard let work = pending else { break }
             pending = nil
+            guard isCurrent(work) else { continue }
+            sourceRevision &+= 1
+            let revision = sourceRevision
+            let mayChangeText = reference.map { !Self.textPixelsMatch($0, work.frame) } ?? true
+            if mayChangeText { await onEvent(.pending(work.frame.stamp, revision)) }
+            guard isCurrent(work) else { continue }
             do {
                 let result = try await recognizer.recognize(work.frame)
-                guard work.generation == generation, work.frame.stamp == stamp,
-                      let latestFrame else { continue }
-                let stableLines = latestFrame.id == work.frame.id ? result.lines : result.lines.filter { line in
-                    Self.textPixelsMatch(OCRResult(frame: result.frame, lines: [line],
-                        supportedLanguages: result.supportedLanguages, elapsedSeconds: result.elapsedSeconds), latestFrame)
-                }
-                guard latestFrame.id == work.frame.id || !stableLines.isEmpty else { continue }
-                // Publish only text proven unchanged in the newest frame. A
-                // clock or animated label cannot hold the whole page hostage.
-                let current = OCRResult(frame: latestFrame, lines: stableLines,
-                                        supportedLanguages: result.supportedLanguages,
-                                        elapsedSeconds: result.elapsedSeconds)
-                reference = current
-                await onEvent(.recognized(current, sourceRevision))
+                guard isCurrent(work) else { continue }
+                let changed = reference.map { TranslationPipeline.signature($0) != TranslationPipeline.signature(result) } ?? true
+                reference = result
+                lastRecognizedAt = clock.now
+                guard changed || mayChangeText else { continue }
+                if !mayChangeText { await onEvent(.pending(work.frame.stamp, revision)) }
+                guard isCurrent(work) else { continue }
+                // The consumer waits for translation/rendering. No other OCR
+                // starts and no frame/text from pending work enters this job.
+                await onEvent(.recognized(result, revision))
             } catch {
                 guard isCurrent(work) else { continue }
-                // Error codes, never the recognized text or capture contents.
+                if !mayChangeText { continue }
                 let nsError = error as NSError
-                await onEvent(.failed(work.frame.stamp, work.sourceRevision,
-                                      "Accurate OCR failed (\(nsError.domain), \(nsError.code)). Try Resume to retry."))
+                await onEvent(.failed(work.frame.stamp, revision,
+                    "Accurate OCR failed (\(nsError.domain), \(nsError.code)). Try Resume to retry."))
             }
         }
         worker = nil
@@ -141,7 +135,6 @@ actor ReadingPipeline {
     }
 
     private func isCurrent(_ work: Work) -> Bool {
-        work.generation == generation && work.frame.stamp == stamp &&
-        work.sourceRevision == sourceRevision
+        work.generation == generation && work.frame.stamp == stamp
     }
 }

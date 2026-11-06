@@ -35,28 +35,22 @@ final class ModelIntegrationTests: XCTestCase, @unchecked Sendable {
         let loadSeconds = ProcessInfo.processInfo.systemUptime - loadStart
         do {
             let translateStart = ProcessInfo.processInfo.systemUptime
-            var translated: [RegionTranslation] = []
-            for region in regions {
-                let result = try await translator.translate(
-                    text: region.text, source: "fr", target: "en",
-                    maximumOutputTokens: 96, deadline: .seconds(3)
-                )
-                XCTAssertEqual(result.finish, .complete)
-                XCTAssertFalse(result.text.isEmpty)
-                guard result.finish == .complete, !result.text.isEmpty else {
-                    throw ModelIntegrationFailure.incompleteTranslation
-                }
-                translated.append(RegionTranslation(region: region, text: result.text))
-            }
+            let events = await MainActor.run { ModelSnapshotEvents() }
+            let pipeline = TranslationPipeline(translator: translator,
+                languageNames: ["fr": "French", "en": "English"]) { events.accept($0) }
+            await pipeline.activate(stamp: frame.stamp, target: "en", manualSource: "fr")
+            await pipeline.consume(ocr)
+            await pipeline.waitUntilIdle()
             let translationSeconds = ProcessInfo.processInfo.systemUptime - translateStart
+            let snapshots = await events.presentations
+            XCTAssertEqual(snapshots.count, 1, "The real model must publish one completed snapshot")
+            let presentation = try XCTUnwrap(snapshots.first)
+            let translated = presentation.regions
             let english = translated.map(\.text).joined(separator: " ").lowercased()
             XCTAssertTrue(english.contains("train"), english)
             XCTAssertTrue(english.contains("tomorrow"), english)
             XCTAssertTrue(english.contains("nine") || english.contains("9"), english)
 
-            let presentation = try await TranslationRenderer().render(
-                frame: frame, translations: translated, occupiedRegions: regions
-            )
             XCTAssertTrue(presentation.overflow.isEmpty, "The complete synthetic sentence should fit")
             XCTAssertEqual(presentation.backingRegions.count, translated.count)
             XCTAssertNotEqual(presentation.initialBackground.pixels, surface.pixels)
@@ -176,3 +170,11 @@ final class ModelIntegrationTests: XCTestCase, @unchecked Sendable {
 }
 
 private enum ModelIntegrationFailure: Error { case incompleteTranslation }
+
+@MainActor
+private final class ModelSnapshotEvents {
+    private(set) var presentations: [TranslationPresentation] = []
+    func accept(_ event: TranslationEvent) {
+        if case let .presented(presentation, _) = event { presentations.append(presentation) }
+    }
+}

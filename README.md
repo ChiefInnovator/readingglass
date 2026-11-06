@@ -13,6 +13,7 @@ Version 0.1.0 is an early preview. Downloadable preview builds are published on 
 ## Features
 
 - Translate screen text in place using local Vision, MLX and Core ML processing.
+- Process one frozen snapshot to completion and display its translated image in one update; keep only the newest pending capture.
 - Keep interacting with the application beneath the click-through glass.
 - Start with a display-relative reading area; adjust width and height independently.
 - Automatically widen for clipped or width-limited text, within the selected display.

@@ -19,7 +19,7 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(request.target, "en")
         XCTAssertEqual(request.text, french)
         XCTAssertEqual(request.maximumOutputTokens, 96)
-        XCTAssertEqual(request.deadline, .seconds(3))
+        XCTAssertEqual(request.deadline, .seconds(10))
         let results = await events.presentations
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(try XCTUnwrap(results.first).regions.map(\.text), ["The train leaves tomorrow at nine."])
@@ -106,13 +106,14 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         let results = await events.presentations
         let failures = await events.failures
         XCTAssertEqual(requests.count, 3)
-        XCTAssertTrue(results.isEmpty)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertTrue(try XCTUnwrap(results.first).regions.isEmpty)
         XCTAssertEqual(failures.count, 1)
     }
 
-    func testFirstRegionRemainsVisibleWhileSecondWaitsAndAfterItFails() async throws {
+    func testSnapshotPublishesOnceAfterEveryRegionSettles() async throws {
         let firstStarted = expectation(description: "First region starts")
-        let secondStarted = expectation(description: "Second region starts after first publication")
+        let secondStarted = expectation(description: "Second region starts without partial publication")
         let translator = ControlledTextTranslator { index in
             if index == 1 { firstStarted.fulfill() }
             if index == 2 { secondStarted.fulfill() }
@@ -133,20 +134,18 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         await fulfillment(of: [secondStarted], timeout: 3)
 
         let whileWaiting = await events.presentations
-        XCTAssertEqual(whileWaiting.count, 1, "The first complete region must appear before the next finishes.")
-        let firstPresentation = try XCTUnwrap(whileWaiting.first)
-        XCTAssertEqual(firstPresentation.regions.map(\.text), ["The first translated paragraph."])
-        XCTAssertEqual(firstPresentation.regions.map { $0.region.text }, [french])
-        let originalSecondRow = original.frame.surface.pixels[(140 * 1360)..<(141 * 1360)]
-        XCTAssertEqual(firstPresentation.initialBackground.pixels[(140 * 1360)..<(141 * 1360)], originalSecondRow)
+        XCTAssertTrue(whileWaiting.isEmpty, "No partial snapshot may appear while a region is still running")
 
         await translator.finish(2, text: "Do not show an unfinished second region", finish: .timedOut)
         await pipeline.waitUntilIdle()
         let afterFailure = await events.presentations
         let failures = await events.failures
-        XCTAssertEqual(afterFailure.count, 1, "An unchanged final result must not republish or erase the first region.")
-        XCTAssertEqual(try XCTUnwrap(afterFailure.last).foreground, firstPresentation.foreground)
-        XCTAssertEqual(try XCTUnwrap(afterFailure.last).initialBackground, firstPresentation.initialBackground)
+        XCTAssertEqual(afterFailure.count, 1, "Publish one complete snapshot after success/failure is known")
+        let final = try XCTUnwrap(afterFailure.first)
+        XCTAssertEqual(final.frame.id, original.frame.id)
+        XCTAssertEqual(final.regions.map(\.text), ["The first translated paragraph."])
+        let originalSecondRow = original.frame.surface.pixels[(140 * 1360)..<(141 * 1360)]
+        XCTAssertEqual(final.initialBackground.pixels[(140 * 1360)..<(141 * 1360)], originalSecondRow)
         XCTAssertTrue(failures.isEmpty, "A failed region must not replace the valid readable region with an error-only state.")
         let finalProgress = await events.progress.last
         XCTAssertEqual(finalProgress?.translated, 1)
@@ -179,7 +178,7 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try XCTUnwrap(results.first).regions.map(\.text), ["Current translation."])
     }
 
-    func testOnlyLatestChangedSourcePublishesAndPendingWorkIsBounded() async throws {
+    func testActiveSnapshotFinishesThenNewestPendingSnapshotRuns() async throws {
         let first = expectation(description: "Initial source starts")
         let newest = expectation(description: "Newest source starts")
         let translator = ControlledTextTranslator { index in
@@ -204,10 +203,10 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         let maximumActive = await translator.maximumActive
         XCTAssertEqual(requests.map(\.text), [french, latestText])
         XCTAssertEqual(maximumActive, 1)
-        XCTAssertEqual(results.map { $0.frame.id.sequence }, [3])
+        XCTAssertEqual(results.map { $0.frame.id.sequence }, [1, 3])
     }
 
-    func testIdenticalSourceUsesNewestPixelsThenCacheWithoutRepeatedInference() async throws {
+    func testIdenticalSourceKeepsFrozenPixelsAndDoesNotRepeatInference() async throws {
         let first = expectation(description: "First source starts")
         let translator = ControlledTextTranslator(maximumExpectedRequests: 1) { index in if index == 1 { first.fulfill() } }
         let events = await MainActor.run { TranslationEventRecorder() }
@@ -224,17 +223,19 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         let requests = await translator.requests
         let results = await events.presentations
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(results.map { $0.frame.id.sequence }, [2, 3])
-        guard results.count == 2 else { return }
-        XCTAssertEqual(results[0].regions[0].text, results[1].regions[0].text)
+        XCTAssertEqual(results.map { $0.frame.id.sequence }, [1], "Never repaint active text onto newer snapshot pixels")
+        await pipeline.retryLatest()
+        await pipeline.waitUntilIdle()
+        let retried = await events.presentations
+        let afterRetry = await translator.requests
+        XCTAssertEqual(retried.map { $0.frame.id.sequence }, [1, 3])
+        XCTAssertEqual(afterRetry.count, 1, "Explicit retry can reuse cached successful text")
     }
 
-    func testCancelledAToBToARunsFreshAWithoutPublishingCancelledWork() async throws {
+    func testReturningToActiveSnapshotDropsIntermediateWorkWithoutCancellation() async throws {
         let first = expectation(description: "First A starts")
-        let replacement = expectation(description: "Replacement A starts")
-        let translator = ControlledTextTranslator { index in
+        let translator = ControlledTextTranslator(maximumExpectedRequests: 1) { index in
             if index == 1 { first.fulfill() }
-            if index == 2 { replacement.fulfill() }
         }
         let events = await MainActor.run { TranslationEventRecorder() }
         let pipeline = TranslationPipeline(translator: translator, languageNames: languages) { events.record($0) }
@@ -244,17 +245,14 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         await fulfillment(of: [first], timeout: 3)
         await pipeline.consume(makeResult(2, stamp: stamp, text: "Le train part demain à dix heures."))
         await pipeline.consume(makeResult(3, stamp: stamp))
-        await translator.finish(1, text: "", finish: .cancelled)
-        await fulfillment(of: [replacement], timeout: 3)
-        await translator.complete(2, text: "Fresh A translation.")
+        await translator.complete(1, text: "The completed A snapshot.")
         await pipeline.waitUntilIdle()
         let requests = await translator.requests
         let results = await events.presentations
-        let failures = await events.failures
-        XCTAssertEqual(requests.map(\.text), [french, french])
-        XCTAssertEqual(results.map { $0.frame.id.sequence }, [3])
-        XCTAssertEqual(try XCTUnwrap(results.first).regions.map(\.text), ["Fresh A translation."])
-        XCTAssertTrue(failures.isEmpty, "Superseded cancellation must not flash an error for current A.")
+        let cancellations = await translator.cancellationCount
+        XCTAssertEqual(requests.map(\.text), [french])
+        XCTAssertEqual(results.map { $0.frame.id.sequence }, [1])
+        XCTAssertEqual(cancellations, 1, "Only initial activation cancels; incoming text never does")
     }
 
     func testWordAndModelTokenBoundsPreserveAllInputWords() async throws {
@@ -436,7 +434,8 @@ final class TranslationPipelineTests: XCTestCase, @unchecked Sendable {
         await pipeline.waitUntilIdle()
         let results = await events.presentations
         let final = await events.progress.last
-        XCTAssertTrue(results.isEmpty)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertTrue(try XCTUnwrap(results.first).regions.isEmpty)
         XCTAssertEqual(final?.failed, 1)
     }
 
@@ -531,6 +530,7 @@ private actor ControlledTextTranslator: TextTranslating {
     private(set) var requests: [RecordedTranslationRequest] = []
     private(set) var maximumActive = 0
     private var active = 0
+    private(set) var cancellationCount = 0
 
     init(maximumExpectedRequests: Int = 2, onStart: @escaping @Sendable (Int) -> Void) {
         self.maximumExpectedRequests = maximumExpectedRequests
@@ -565,7 +565,7 @@ private actor ControlledTextTranslator: TextTranslating {
 
     // Deliberately uninterruptible: stale result rejection must still work if
     // an underlying native operation finishes after cancellation was requested.
-    func cancel() async {}
+    func cancel() async { cancellationCount += 1 }
 }
 
 @MainActor

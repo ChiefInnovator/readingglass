@@ -36,13 +36,15 @@ Dragging uses the pointer offset from mouse-down and keeps the toolbar/glass rel
 
 ## Processing and privacy
 
-Capture runs at 15 fps with bounded frame delivery. Accurate Vision OCR is limited to one active job and one newest pending frame. Geometry/language changes invalidate stale work. Translation caches and captured content remain in memory.
+Capture runs at 15 fps with bounded frame delivery. One frozen snapshot runs through accurate Vision OCR, all translation chunks and rendering to completion. Capture retains only the newest pending frame during that job; no new OCR or translation interrupts it. Geometry/language changes and pause/hide still cancel obsolete work. Translation caches and captured content remain in memory.
 
-Vision input is bounded to 3,072 pixels per side and four megapixels; OCR coordinates map back to the full-resolution capture. Changed background pixels do not indefinitely invalidate stable recognized text. Each published line is checked against the latest capture before reuse.
+Vision input is bounded to 3,072 pixels per side and four megapixels; OCR coordinates map back to the full-resolution frozen capture. Background-only changes are scanned at most once per second, and identical recognized text/layout does not repeat inference or repaint. Results never combine text from one frame with pixels from another.
 
 Overlapping OCR fragments are resolved before paragraph grouping. Compact numeric labels, uncertain regions and clipped input retain original pixels. Translation output must preserve numeric tokens. Progress distinguishes translated, unchanged, uncertain, clipped and failed regions.
 
 Core Text produces separate foreground and background rasters. Output rectangles cannot overlap. OCR glyph measurements guide source-matched font size, ink position and color. The original text footprint is preferred; nearby space is bounded by other content and visible separators. Size adjustment is limited to 10% below the source estimate, with a 10-point floor; missing glyph measurements retain the 16-point fallback. Unsafe fits use Read full text. Translation and restoration share an inference gate so cosmetic work cannot monopolize the model runtime. Background refinement does not alter foreground pixels.
+
+Each snapshot publishes one complete composite after every region has succeeded, failed, or been preserved. Region progress updates only the toolbar. Failed and cut-off regions keep their original snapshot pixels; a failed region does not discard successful work. The previous completed image stays visible while its replacement is prepared at the same geometry. Each model attempt has a ten-second deadline and retains the existing one-level output-limit retry; explicit Retry reuses cached successful regions.
 
 Copy Screenshot uses a fresh ScreenCaptureKit one-shot capture with the entire app excluded. It works independently of translation and pause state, verifies that the glass has not moved, and writes an in-memory PNG to the system clipboard. It neither saves a file nor sends the image to another service. Tests use an isolated pasteboard.
 
